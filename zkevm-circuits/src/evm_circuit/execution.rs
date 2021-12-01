@@ -23,7 +23,9 @@ mod byte;
 mod comparator;
 mod dup;
 mod error_oog_pure_memory;
+mod jump;
 mod jumpdest;
+mod jumpi;
 mod memory;
 mod pc;
 mod pop;
@@ -37,7 +39,9 @@ use byte::ByteGadget;
 use comparator::ComparatorGadget;
 use dup::DupGadget;
 use error_oog_pure_memory::ErrorOOGPureMemoryGadget;
+use jump::JumpGadget;
 use jumpdest::JumpdestGadget;
+use jumpi::JumpiGadget;
 use memory::MemoryGadget;
 use pc::PcGadget;
 use pop::PopGadget;
@@ -181,7 +185,7 @@ pub mod bus_mapping_tmp {
         pub opcode_source: F,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Clone, Debug, Default)]
     pub struct ExecStep {
         pub call_idx: usize,
         pub rw_indices: Vec<usize>,
@@ -209,6 +213,58 @@ pub mod bus_mapping_tmp {
                     Keccak256::digest(&bytes).as_slice(),
                 ),
                 bytes,
+            }
+        }
+
+        pub fn table_assignments<'a, F: FieldExt>(
+            &'a self,
+            randomness: F,
+        ) -> impl Iterator<Item = [F; 4]> + '_ {
+            struct BytecodeIterator<'a, F> {
+                idx: usize,
+                push_data_left: usize,
+                hash: F,
+                bytes: &'a [u8],
+            }
+
+            impl<'a, F: FieldExt> Iterator for BytecodeIterator<'a, F> {
+                type Item = [F; 4];
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    if self.idx == self.bytes.len() {
+                        return None;
+                    }
+
+                    let idx = self.idx;
+                    let byte = self.bytes[self.idx];
+                    let mut is_code = true;
+
+                    if self.push_data_left > 0 {
+                        is_code = false;
+                        self.push_data_left -= 1;
+                    } else if (0x60..0x80).contains(&byte) {
+                        self.push_data_left = byte as usize - 0x60 + 1;
+                    }
+
+                    self.idx += 1;
+
+                    Some([
+                        self.hash,
+                        F::from_u64(idx as u64),
+                        F::from_u64(byte as u64),
+                        F::from_u64(is_code as u64),
+                    ])
+                }
+            }
+
+            BytecodeIterator {
+                idx: 0,
+                push_data_left: 0,
+                hash: RandomLinearCombination::random_linear_combine(
+                    self.hash.to_le_bytes(),
+                    randomness,
+                ),
+                bytes: &self.bytes,
             }
         }
     }
@@ -340,7 +396,9 @@ pub(crate) struct ExecutionConfig<F> {
     comparator_gadget: ComparatorGadget<F>,
     dup_gadget: DupGadget<F>,
     error_oog_pure_memory_gadget: ErrorOOGPureMemoryGadget<F>,
+    jump_gadget: JumpGadget<F>,
     jumpdest_gadget: JumpdestGadget<F>,
+    jumpi_gadget: JumpiGadget<F>,
     memory_gadget: MemoryGadget<F>,
     pc_gadget: PcGadget<F>,
     pop_gadget: PopGadget<F>,
@@ -362,7 +420,7 @@ impl<F: FieldExt> ExecutionConfig<F> {
     where
         TxTable: LookupTable<F, 4>,
         RwTable: LookupTable<F, 8>,
-        BytecodeTable: LookupTable<F, 3>,
+        BytecodeTable: LookupTable<F, 4>,
     {
         let q_step = meta.selector();
         let qs_byte_lookup = meta.advice_column();
@@ -441,7 +499,9 @@ impl<F: FieldExt> ExecutionConfig<F> {
             comparator_gadget: configure_gadget!(),
             dup_gadget: configure_gadget!(),
             error_oog_pure_memory_gadget: configure_gadget!(),
+            jump_gadget: configure_gadget!(),
             jumpdest_gadget: configure_gadget!(),
+            jumpi_gadget: configure_gadget!(),
             memory_gadget: configure_gadget!(),
             pc_gadget: configure_gadget!(),
             pop_gadget: configure_gadget!(),
@@ -516,7 +576,7 @@ impl<F: FieldExt> ExecutionConfig<F> {
     ) where
         TxTable: LookupTable<F, 4>,
         RwTable: LookupTable<F, 8>,
-        BytecodeTable: LookupTable<F, 3>,
+        BytecodeTable: LookupTable<F, 4>,
     {
         let mut input_exprs_map = HashMap::new();
 
@@ -648,6 +708,8 @@ impl<F: FieldExt> ExecutionConfig<F> {
             ExecutionResult::POP => assign_exec_step!(self.pop_gadget),
             ExecutionResult::MLOAD => assign_exec_step!(self.memory_gadget),
             ExecutionResult::PC => assign_exec_step!(self.pc_gadget),
+            ExecutionResult::JUMP => assign_exec_step!(self.jump_gadget),
+            ExecutionResult::JUMPI => assign_exec_step!(self.jumpi_gadget),
             ExecutionResult::JUMPDEST => {
                 assign_exec_step!(self.jumpdest_gadget)
             }

@@ -158,7 +158,7 @@ pub enum AccountFieldTag {
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallContextFieldTag {
-    RWCounterEndOfReversion = 1,
+    RwCounterEndOfReversion = 1,
     CallerCallId,
     TxId,
     Depth,
@@ -219,6 +219,7 @@ pub(crate) enum Lookup<F> {
         hash: Expression<F>,
         index: Expression<F>,
         value: Expression<F>,
+        is_code: Expression<F>,
     },
     Conditional(Expression<F>, Box<Lookup<F>>),
 }
@@ -259,8 +260,18 @@ impl<F: FieldExt> Lookup<F> {
                 values.to_vec(),
             ]
             .concat(),
-            Self::Bytecode { hash, index, value } => {
-                vec![hash.clone(), index.clone(), value.clone()]
+            Self::Bytecode {
+                hash,
+                index,
+                value,
+                is_code,
+            } => {
+                vec![
+                    hash.clone(),
+                    index.clone(),
+                    value.clone(),
+                    is_code.clone(),
+                ]
             }
             Self::Conditional(condition, lookup) => lookup
                 .input_exprs()
